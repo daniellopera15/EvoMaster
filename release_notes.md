@@ -2,6 +2,45 @@
 
 Under development in `master` branch.
 
+# Version 6.1.1
+
+### New Features
+- REST APIs: native support for Overlay. It is now possible to provide as input one or more OAI Overlay files, which are automatically applied to the OpenAPI schema of the tested API.  
+- Support of WFC 0.6.0 for dynamic creation of users in auth configurations. 
+- `--fieldsToSkipInAssertions` can be used to manually specify which flaky fields to skip in assertion generation.
+
+### Addressed GitHub Issues
+- #1286: SSL verification error during the execution of generated tests 
+- #1278: Support Ignoring Response Fields in Black-Box Test Generation for Python Output
+- #1071: Error in EvoMaster 3.1.0: Black-Box Testing Initialization Failure with SSLException
+
+### Fixed Bugs
+- Resolved issue of wrong handling of empty bodies in PUT/PATCH/POST requests. 
+- Fixed sending of wrong content-type header when type is not supported in EvoMaster.
+
+
+# Version 6.1.0
+
+Botched release
+
+# Version 6.0.0
+
+### Breaking Changes
+- Now the default mode for EvoMaster is black-box testing. 
+  If you have workflows where you are running EvoMaster in white-box mode without specifying `--blackBox false`, those will break. Now, you will need to explicitly set that option. 
+
+### New Features
+
+- EvoMaster is now available on PyPi. Can be installed with a simple "pip install evomaster".
+- To simplify EvoMaster's use, parameters such as '--schema' and '--base' have been introduced, that deprecate the previous '--bbSwaggerUrl' and '--bbTargetUrl'. Those latter still work, to keep backward compatibility.  
+- Now EvoMaster will honor 429 responses, by waiting for the provided amount of time in the returned Retry-After header (or for a default amount of time if no header is returned, or its value is incorrect). 
+- Upgraded to WFC 0.5.1, which includes new tab views for 'Examples' and 'Warnings'.
+
+
+### Fixed Bugs
+- Few issues related to named examples in OpenAPI schemas have been fixed, including name-value mismatches and handling of allOf/anyOf/oneOf constraints. 
+- Fixed bug in handling of XML objects having a single entry.
+
 # Version 5.2.0
 
 ### New Features

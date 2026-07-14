@@ -303,25 +303,17 @@ class RestTestCaseWriter : HttpWsTestCaseWriter {
                 if (bodyParam != null) {
                     lines.append(", data=body")
                 }
-                if(config.testTimeout > 0) {
+                if(config.tcpTimeoutMs > 0) {
                     /*
-                        As timeout at test level does not work reliably in Python, we do timeout as well in each HTTP call.
+                        Client timeout per HTTP call, same source as fuzzing tcpTimeoutMs.
+                        Also, timeout at test level does not work reliably in Python.
                     */
-                    lines.append(", timeout=${config.testTimeout}")
+                    lines.append(", timeout=${TestSuiteWriter.httpTimeoutVarSeconds}")
                 }
             }
         }
 
-//        if (format.isCsharp()) {
-//            if (isVerbWithPossibleBodyPayload(verb)) {
-//                lines.append(", ")
-//                handleBody(call, lines)
-//            }
-//            lines.append(");")
-//        } else {
-
         lines.append(")")
-//        }
     }
 
     private fun handleQuery(queryPair: String, replacements: Map<String, RestLinkParameter>) : String{
@@ -550,9 +542,7 @@ class RestTestCaseWriter : HttpWsTestCaseWriter {
 
 
     private fun getAllUsedExamples(ind: RestIndividual) : List<String>{
-        return ind.seeFullTreeGenes()
-            .filter { it is UserExamplesGene && it.isUsedForExamples() }
-            .filter { it.staticCheckIfImpactPhenotype() }
+        return ind.getAllActiveUsedExamples()
             .map {
                 val name = if(it is UserExamplesGene){
                     //always true

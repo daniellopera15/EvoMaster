@@ -11,6 +11,7 @@ import org.evomaster.client.java.instrumentation.shared.ReplacementCategory
 import org.evomaster.core.config.ConfigProblemException
 import org.evomaster.core.config.ConfigUtil
 import org.evomaster.core.config.ConfigsFromFile
+import org.evomaster.core.llm.LlmProvider
 import org.evomaster.core.logging.LoggingUtil
 import org.evomaster.core.output.OutputFormat
 import org.evomaster.core.output.naming.NamingStrategy
@@ -19,6 +20,7 @@ import org.evomaster.core.problem.enterprise.ExperimentalFaultCategory
 import org.evomaster.core.search.impact.impactinfocollection.GeneMutationSelectionMethod
 import org.evomaster.core.search.service.IdMapper
 import org.slf4j.LoggerFactory
+import java.lang.reflect.ParameterizedType
 import java.net.MalformedURLException
 import java.net.URL
 import java.nio.file.Files
@@ -77,7 +79,7 @@ class EMConfig {
 
         private val defaultOutputFormatForBlackBox = OutputFormat.PYTHON_UNITTEST
 
-        private val defaultTestCaseNamingStrategy = NamingStrategy.ACTION
+        private val defaultTestCaseNamingStrategy = NamingStrategy.DETERMINISTIC
 
         private val defaultTestCaseSortingStrategy = SortingStrategy.TARGET_INCREMENTAL
 
@@ -235,17 +237,27 @@ class EMConfig {
                 }
             }
 
-            var experimentalValues = ""
-            var validValues = ""
-            val returnType = m.returnType.javaType as Class<*>
+            val returnType = m.returnType.javaType
 
-            if (returnType.isEnum) {
-                val elements = returnType.getDeclaredMethod("values")
-                        .invoke(null) as Array<*>
-                val experimentElements = elements.filter { it is WithExperimentalOptions && it.isExperimental() }
-                val validElements = elements.filter { it !is WithExperimentalOptions || !it.isExperimental() }
-                experimentalValues = experimentElements.joinToString(", ")
-                validValues = validElements.joinToString(", ")
+            val (validValues, experimentalValues) = when (returnType) {
+                is Class<*> if returnType.isEnum -> {
+                    getValidAndExperimentalEnumValues(returnType)
+                }
+
+                is ParameterizedType -> {
+                    if (!Collection::class.java.isAssignableFrom(returnType.rawType as Class<*>)) {
+                        throw IllegalStateException("Configuration '${m.name}' is parameterized, but not a collection")
+                    }
+                    if (returnType.actualTypeArguments.size != 1) {
+                        throw IllegalStateException("Configuration '${m.name}' has more than 1 generic type in a collection")
+                    }
+                    val generic = returnType.actualTypeArguments[0] as Class<*>
+                    getValidAndExperimentalEnumValues(generic)
+                }
+
+                else -> {
+                    Pair("", "")
+                }
             }
 
             val experimental = (m.annotations.find { it is Experimental } as? Experimental)
@@ -266,6 +278,17 @@ class EMConfig {
             )
         }
 
+        private fun getValidAndExperimentalEnumValues(enumClass: Class<*>) : Pair<String,String>{
+            assert(enumClass.isEnum)
+            val elements = enumClass.getDeclaredMethod("values")
+                .invoke(null) as Array<*>
+            val experimentElements = elements.filter { it is WithExperimentalOptions && it.isExperimental() }
+            val validElements = elements.filter { it !is WithExperimentalOptions || !it.isExperimental() }
+
+            val experimentalValues = experimentElements.joinToString(", ")
+            val validValues = validElements.joinToString(", ")
+            return Pair(validValues,experimentalValues)
+        }
 
         fun getConfigurationProperties(): List<KMutableProperty<*>> {
             return EMConfig::class.members
@@ -452,39 +475,71 @@ class EMConfig {
 
     private fun updateValue(optionValue: String, m: KMutableProperty<*>) {
 
-        val returnType = m.returnType.javaType as Class<*>
+        val returnType = m.returnType.javaType
 
-        /*
+        if(returnType is Class<*>) {
+            /*
                 TODO: ugly checks. But not sure yet if can be made better in Kotlin.
                 Could be improved with isSubtypeOf from 1.1?
                 http://stackoverflow.com/questions/41553647/kotlin-isassignablefrom-and-reflection-type-checks
              */
-        try {
-            if (Integer.TYPE.isAssignableFrom(returnType)) {
-                m.setter.call(this, Integer.parseInt(optionValue))
+            try {
+                if (Integer.TYPE.isAssignableFrom(returnType)) {
+                    m.setter.call(this, Integer.parseInt(optionValue))
 
-            } else if (java.lang.Long.TYPE.isAssignableFrom(returnType)) {
-                m.setter.call(this, java.lang.Long.parseLong(optionValue))
+                } else if (java.lang.Long.TYPE.isAssignableFrom(returnType)) {
+                    m.setter.call(this, java.lang.Long.parseLong(optionValue))
 
-            } else if (java.lang.Double.TYPE.isAssignableFrom(returnType)) {
-                m.setter.call(this, java.lang.Double.parseDouble(optionValue))
+                } else if (java.lang.Double.TYPE.isAssignableFrom(returnType)) {
+                    m.setter.call(this, java.lang.Double.parseDouble(optionValue))
 
-            } else if (java.lang.Boolean.TYPE.isAssignableFrom(returnType)) {
-                m.setter.call(this, parseBooleanStrict(optionValue))
+                } else if (java.lang.Boolean.TYPE.isAssignableFrom(returnType)) {
+                    m.setter.call(this, parseBooleanStrict(optionValue))
 
-            } else if (java.lang.String::class.java.isAssignableFrom(returnType)) {
-                m.setter.call(this, optionValue)
+                } else if (java.lang.String::class.java.isAssignableFrom(returnType)) {
+                    m.setter.call(this, optionValue)
 
-            } else if (returnType.isEnum) {
-                val valueOfMethod = returnType.getDeclaredMethod("valueOf",
-                    java.lang.String::class.java)
-                m.setter.call(this, valueOfMethod.invoke(null, optionValue))
+                } else if (returnType.isEnum) {
+                    val valueOfMethod = returnType.getDeclaredMethod("valueOf", java.lang.String::class.java)
+                    m.setter.call(this, valueOfMethod.invoke(null, optionValue))
 
-            } else {
-                throw IllegalStateException("BUG: cannot handle type $returnType")
+                } else {
+                    throw IllegalStateException("BUG: cannot handle type $returnType")
+                }
+            } catch (e: Exception) {
+                throw ConfigProblemException("Failed to handle property '${m.name}': ${e.message}")
             }
-        } catch (e: Exception) {
-            throw ConfigProblemException("Failed to handle property '${m.name}': ${e.message}")
+        } else if(returnType is ParameterizedType) {
+
+            if (!Collection::class.java.isAssignableFrom(returnType.rawType as Class<*>)) {
+                throw IllegalStateException("Configuration '${m.name}' is parameterized, but not a collection")
+            }
+            if (returnType.actualTypeArguments.size != 1) {
+                throw IllegalStateException("Configuration '${m.name}' has more than 1 generic type in a collection")
+            }
+            val generic = returnType.actualTypeArguments[0] as Class<*>
+            if(!generic.isEnum){
+                throw IllegalStateException("Content for configuration '${m.name}' is not an enumeration: ${generic.name}")
+            }
+
+            val valueOfMethod = generic.getDeclaredMethod("valueOf", java.lang.String::class.java)
+
+            val collection = optionValue.split(",")
+                .map {
+                    try {
+                        valueOfMethod.invoke(null, it)
+                    }catch (e: Exception){
+                        throw  ConfigProblemException("Failed to handle property '${m.name}': ${e.message}")
+                    }
+                }
+                .run {
+                    if(Set::class.java.isAssignableFrom(returnType.rawType as Class<*>)){
+                        toSet()
+                    } else {
+                        this
+                    }
+                }
+            m.setter.call(this, collection)
         }
     }
 
@@ -626,10 +681,10 @@ class EMConfig {
             algorithm = if(blackBox) defaultAlgorithmForBlackBox else defaultAlgorithmForWhiteBox
         }
 
-
-        if (!blackBox && bbSwaggerUrl.isNotBlank()) {
-            throw ConfigProblemException("'bbSwaggerUrl' should be set only in black-box mode")
-        }
+        //no longer the case, once we got default value
+//        if (!blackBox && bbSwaggerUrl.isNotBlank()) {
+//            throw ConfigProblemException("'bbSwaggerUrl' should be set only in black-box mode")
+//        }
         if (!blackBox && bbTargetUrl.isNotBlank()) {
             throw ConfigProblemException("'bbTargetUrl' should be set only in black-box mode")
         }
@@ -640,11 +695,24 @@ class EMConfig {
 
         if (blackBox && !bbExperiments) {
 
-            if (problemType == ProblemType.REST && bbSwaggerUrl.isNullOrBlank()) {
-                throw ConfigProblemException("In black-box mode for REST APIs, you must set the bbSwaggerUrl option")
+            if(problemType == ProblemType.REST && schema == defaultSchema && !Files.exists(Paths.get(defaultSchema))){
+                LoggingUtil.uniqueUserInfo(
+                    AnsiColor.blinking(AnsiColor.inBlue("[IMPORTANT]")) +
+                        AnsiColor.inYellow(" When doing black-box testing, you need to specify the location of the schema" +
+                    " via a URL or local file path using '--schema' option." +
+                    " If not, default is checking for file $defaultSchema," +
+                    " which seems not currently existing on your machine."))
             }
-            if (problemType == ProblemType.GRAPHQL && bbTargetUrl.isNullOrBlank()) {
+
+            if (problemType == ProblemType.REST && schema.isBlank()) {
+                throw ConfigProblemException("In black-box mode for REST APIs, you must set the 'schema' option." +
+                        " If instead you were going to do white-box testing, recall to use '--blackBox false'.")
+            }
+            if (problemType == ProblemType.GRAPHQL && bbTargetUrl.isBlank()) {
                 throw ConfigProblemException("In black-box mode for GraphQL APIs, you must set the bbTargetUrl option")
+            }
+            if (problemType == ProblemType.MCP && base.isBlank()) {
+                throw ConfigProblemException("In black-box mode for MCP servers, you must set the base parameter to the server URL")
             }
         }
 
@@ -659,11 +727,14 @@ class EMConfig {
         if (blackBox && ratePerMinute <= 0) {
             LoggingUtil.uniqueUserWarn("You have not setup 'ratePerMinute'. If you are doing testing of" +
                     " a remote service which you do not own, you might want to put a rate-limiter to prevent" +
-                    " EvoMaster from bombarding such service with HTTP requests.")
+                    " EvoMaster from bombarding such service with HTTP requests." +
+                    " EvoMaster automatically honors 429 responses, and waits accordingly based on the returned" +
+                    " Retry-After header. Still, you might also want to use 'ratePerMinute' if you are just" +
+                    " testing EvoMaster out on some public APIs.")
         }
 
-        if (!blackBox && outputFormat == OutputFormat.PYTHON_UNITTEST) {
-            throw ConfigProblemException("Python output is used only for black-box testing")
+        if (!blackBox && outputFormat != OutputFormat.DEFAULT && !outputFormat.isJavaOrKotlin()) {
+            throw ConfigProblemException("$outputFormat output is used only for black-box testing")
         }
 
         when (stoppingCriterion) {
@@ -721,21 +792,13 @@ class EMConfig {
         }
 
         if ((outputFilePrefix.contains("-") || outputFileSuffix.contains("-"))
-                && outputFormat.isJavaOrKotlin()) { //TODO also for C#?
+                && outputFormat.isJavaOrKotlin()) {
             throw ConfigProblemException("In JVM languages, you cannot use the symbol '-' in test suite file name")
         }
 
-        if (seedTestCases && seedTestCasesPath.isNullOrBlank()) {
+        if (seedTestCases && seedTestCasesPath.isBlank()) {
             throw ConfigProblemException("When using the seedTestCases option, you must specify the file path of the test cases with the seedTestCasesPath option")
         }
-
-        // Clustering constraints: the executive summary is not really meaningful without the clustering
-//        if (executiveSummary && testSuiteSplitType != TestSuiteSplitType.FAULTS) {
-//            executiveSummary = false
-//            LoggingUtil.uniqueUserWarn("The option to turn on Executive Summary is only meaningful when clustering is turned on (--testSuiteSplitType CLUSTERING). " +
-//                    "The option has been deactivated for this run, to prevent a crash.")
-//            //throw ConfigProblemException("The option to turn on Executive Summary is only meaningful when clustering is turned on (--testSuiteSplitType CLUSTERING).")
-//        }
 
         if (problemType == ProblemType.RPC
                 && createTests
@@ -778,16 +841,8 @@ class EMConfig {
 
         if (ssrf &&
             vulnerableInputClassificationStrategy == VulnerableInputClassificationStrategy.LLM &&
-            !languageModelConnector) {
+            !llm) {
             throw ConfigProblemException("Language model connector is disabled. Unable to run the input classification using LLM.")
-        }
-
-        if (languageModelConnector && languageModelServerURL.isNullOrEmpty()) {
-            throw ConfigProblemException("Language model server URL cannot be empty.")
-        }
-
-        if (languageModelConnector && languageModelName.isNullOrEmpty()) {
-            throw ConfigProblemException("Language model name cannot be empty.")
         }
 
         if(prematureStop.isNotEmpty() && stoppingCriterion != StoppingCriterion.TIME){
@@ -817,6 +872,10 @@ class EMConfig {
                 throw ConfigProblemException("'sutDistEnvVarName' must be specified if 'useEnvVarsForPathInTests' is enabled.")
             if (sutJarEnvVarName.isEmpty())
                 throw ConfigProblemException("'sutJarEnvVarName' must be specified if 'useEnvVarsForPathInTests' is enabled.")
+        }
+
+        if(namingStrategy == NamingStrategy.LLM && !llm){
+            throw ConfigProblemException("Naming strategy LLM require the setup and use of an LLM")
         }
     }
 
@@ -959,6 +1018,7 @@ class EMConfig {
 
         val properties = getConfigurationProperties()
                 .filter { it.annotations.find { it is Experimental } != null }
+                .filter{ it.returnType.javaType is Class<*>} // TODO handle Lists of Enum
                 .filter {
                     val returnType = it.returnType.javaType as Class<*>
                     when {
@@ -970,6 +1030,7 @@ class EMConfig {
                 .map { it.name }
 
         val enums = getConfigurationProperties()
+                .filter{ it.returnType.javaType is Class<*>} // TODO handle Lists of Enum
                 .filter {
                     val returnType = it.returnType.javaType as Class<*>
                     if (returnType.isEnum) {
@@ -1127,6 +1188,42 @@ class EMConfig {
 
     //----- "Important" options, sorted by priority --------------
 
+
+    val defaultSchema = "openapi.json"
+
+    @Important(0.1)
+    @Cfg("Use EvoMaster in black-box mode. This does not require an EvoMaster Driver up and running. However, you will need to provide further option to specify how to connect to the SUT")
+    var blackBox = true
+
+    @Important(0.2)
+    @Cfg("When in black-box mode for REST APIs, specify the URL of where the OpenAPI/Swagger schema can be downloaded from." +
+            " If the schema is on the local machine, you can use a URL starting with 'file://'." +
+            " If the given URL is neither starting with 'file' nor 'http', then it will be treated as a local file path.")
+    var schema: String = defaultSchema
+
+    @Deprecated("Rather use 'schema'")
+    @Cfg("Old, deprecated parameter for 'schema'.")
+    var bbSwaggerUrl: String
+        get() = schema
+        set(value){ schema = value }
+
+    @Important(0.3)
+    @Url
+    @Cfg("When in black-box mode, specify the base URL of where the SUT can be reached, e.g.," +
+            " http://localhost:8080 ." +
+            " In REST, if this is missing, the URL will be inferred from OpenAPI/Swagger schema." +
+            " Otherwise, it should not contain any path elements (e.g., '/api'), as it will be inferred from the schema." +
+            " In GraphQL, this must point to the entry point of the API, e.g.," +
+            " http://localhost:8080/graphql .")
+    var base: String = ""
+
+    @Deprecated("Rather use 'base'")
+    @Cfg("Old, deprecated parameter for 'base'.")
+    var bbTargetUrl: String
+        get() = base
+        set(value) { base = value }
+
+
     val defaultMaxTime = "60s"
 
     @Important(1.0)
@@ -1219,32 +1316,15 @@ class EMConfig {
             " If 0 or negative, the timeout is not applied.")
     var testTimeout = 60
 
-    @Important(3.0)
-    @Cfg("Use EvoMaster in black-box mode. This does not require an EvoMaster Driver up and running. However, you will need to provide further option to specify how to connect to the SUT")
-    var blackBox = false
-
-    @Important(3.2)
-    @Cfg("When in black-box mode for REST APIs, specify the URL of where the OpenAPI/Swagger schema can be downloaded from." +
-            " If the schema is on the local machine, you can use a URL starting with 'file://'." +
-            " If the given URL is neither starting with 'file' nor 'http', then it will be treated as a local file path.")
-    var bbSwaggerUrl: String = ""
-
-    @Important(3.5)
-    @Url
-    @Cfg("When in black-box mode, specify the URL of where the SUT can be reached, e.g.," +
-            " http://localhost:8080 ." +
-            " In REST, if this is missing, the URL will be inferred from OpenAPI/Swagger schema." +
-            " In GraphQL, this must point to the entry point of the API, e.g.," +
-            " http://localhost:8080/graphql .")
-    var bbTargetUrl: String = ""
-
 
     @Important(3.7)
     @Cfg("Rate limiter, of how many actions to do per minute. For example, when making HTTP calls towards" +
             " an external service, might want to limit the number of calls to avoid bombarding such service" +
             " (which could end up becoming equivalent to a DoS attack)." +
             " A value of zero or negative means that no limiter is applied." +
-            " This is needed only for black-box testing of remote services.")
+            " This is needed only for black-box testing of remote services." +
+            " Note that, evan without this parameter, EvoMaster will still respect the Retry-After given back" +
+            " in 429 responses.")
     var ratePerMinute = 0
 
     @Important(4.0)
@@ -1320,6 +1400,41 @@ class EMConfig {
             " file per type is generated.")
     var maxTestsPerTestSuite = 200
 
+    @Important(8.1)
+    @Cfg("Comma-separated list of response field names to skip when generating assertions." +
+            " This is useful when some fields have non-stable responses that can lead to test flakiness." +
+            " Note that EvoMaster has some systems to automatically handle flakiness." +
+            " This option is an extra layer of protection to force skipping some fields that EvoMaster is not" +
+            " currently able to automatically handle.")
+    var fieldsToSkipInAssertions = ""
+
+    @Important(9.0)
+    @ExistingPath(true,false)
+    @Cfg("Specify an OAI Overlay file path, or a folder containing those." +
+            " In this latter case, Overlay files will be searched recursively in the nested folder, matching" +
+            " a given list of configurable suffixes." +
+            " Each Overlay will be applied to the target OpenAPI schema." +
+            " If more than one Overlay file is applied, no specific ordering of transformations is enforced.")
+    var overlay = ""
+
+    @Important(9.1)
+    @Cfg("Comma ',' separated list of file name suffixes." +
+            " When scanning a folder for OAI Overlay files, any file with name matching any one of these" +
+            " suffixes will be loaded and applied." +
+            " For example, '.json' could be used to match all JSON files." +
+            " If the folder contains also other types of files with same extension, you might need to define" +
+            " some naming convention, and then use suffixes based on it, e.g., '-overlay.yaml' to match" +
+            " all YAML files whose name ends in 'overlay', like 'example-overlay.yaml'.")
+    var overlayFileSuffixes = ".json,.yaml,.yml"
+
+    @Important(9.2)
+    @Cfg("When applying Overlay transformations, by default EvoMaster will crash immediately" +
+            " if there is any issue with the transformations, e.g., if some transformations are not applied" +
+            " because the JSON Path selectors found no applicable node in the OpenAPI schema." +
+            " This option can be used to override such behavior, and let the fuzzing go on without" +
+            " applying any overlay.")
+    var overlayLenient = false
+
 
     //-------- other options -------------
 
@@ -1369,7 +1484,8 @@ class EMConfig {
         REST(experimental = false),
         GRAPHQL(experimental = false),
         RPC(experimental = true),
-        WEBFRONTEND(experimental = true);
+        WEBFRONTEND(experimental = true),
+        MCP(experimental = true);
 
         override fun isExperimental() = experimental
     }
@@ -1528,11 +1644,11 @@ class EMConfig {
         DETERMINISTIC
     }
 
-
-
     @Experimental
-    @Cfg("Model used to learn input constraints and infer response status before making request.")
-    var aiModelForResponseClassification = AIResponseClassifierModel.NONE
+    @Cfg("Models used to learn input constraints and predict the response status before issuing a request. " +
+            "Supports both single-model and ensemble configurations. " +
+            "Ensemble model is a combination of a comma-separated list, e.g., GLM,NN,KDE.")
+    var aiModelForResponseClassification: Set<AIResponseClassifierModel> = setOf(AIResponseClassifierModel.NONE)
 
     @Experimental
     @Cfg("Learning rate controlling the step size during parameter updates in classifiers. " +
@@ -1578,7 +1694,7 @@ class EMConfig {
 
     @Experimental
     @Cfg("The encoding strategy applied to transform raw data to the encoded version.")
-    var aiEncoderType = EncoderType.RAW
+    var aiEncoderType = EncoderType.NORMAL
 
 
     @Experimental
@@ -1598,7 +1714,7 @@ class EMConfig {
     @PercentageAsProbability(false)
     @Cfg("If using THRESHOLD for AI Classification Repair, specify its value." +
             " All classifications with probability equal or above such threshold value will be accepted.")
-    var classificationRepairThreshold = 0.8
+    var classificationRepairThreshold = 0.5
 
     @Experimental
     @Cfg("Specify how the classification of actions's response will be used to execute a possible repair on the action.")
@@ -1637,7 +1753,7 @@ class EMConfig {
     @Experimental
     @Cfg("Minimum confidence threshold required for the AI response classifier to decide" +
             "whether to send a request as-is or attempt a repair.")
-    var aIResponseClassifierWeaknessThreshold = 0.4
+    var aIResponseClassifierWeaknessThreshold = 0.8
 
     @Cfg("Output a JSON file representing statistics of the fuzzing session, written in the WFC Report format." +
             " This also includes a index.html web application to visualize such data.")
@@ -1962,6 +2078,7 @@ class EMConfig {
             "NOTE: this should not cause any tests to fail.")
     var enableBasicAssertions = true
 
+
     @Cfg("Apply method replacement heuristics to smooth the search landscape." +
             " Note that the method replacement instrumentations would still be applied, it is just that their testing targets" +
             " will be ignored in the fitness function if this option is set to false.")
@@ -1989,6 +2106,12 @@ class EMConfig {
             " Note: this applies only for languages in which instrumentation is applied at runtime, like Java/Kotlin" +
             " on the JVM.")
     var instrumentMR_MONGO = true
+
+    @Experimental
+    @Cfg("Execute instrumentation for method replace with category CASSANDRA." +
+            " Note: this applies only for languages in which instrumentation is applied at runtime, like Java/Kotlin" +
+            " on the JVM.")
+    var instrumentMR_CASSANDRA = false
 
     @Cfg("Execute instrumentation for method replace with category DYNAMODB." +
             " Note: this applies only for languages in which instrumentation is applied at runtime, like Java/Kotlin" +
@@ -2724,6 +2847,17 @@ class EMConfig {
     var handleFlakiness = false
 
     @Experimental
+    @DependsOnTrueFor("handleFlakiness")
+    @Cfg("Specify whether to infer potential flakiness statically from response values, such as timestamps, UUIDs, hashes and runtime-specific messages.")
+    var enableStaticFlakyInference = true
+
+    @Experimental
+    @Min(0.0)
+    @DependsOnTrueFor("handleFlakiness")
+    @Cfg("Specify the number of re-executions for detecting flakiness in tests. Set to 0 to disable re-execution based flakiness detection.")
+    var execNumForDetectFlakiness = 1
+
+    @Experimental
     @Cfg("Use environment variables to define the paths required by External Drivers. " +
             "This is necessary when the generated tests are executed on the different machine. " +
             "Note that this setting only affects the generated test cases.")
@@ -2836,6 +2970,10 @@ class EMConfig {
     @Cfg("Whether to employ constraints specified in API schema (e.g., OpenAPI) in test generation")
     var enableSchemaConstraintHandling = true
 
+    @Experimental
+    @Cfg("Whether to enable the handling of new type formats in OpenAPI schemas, e.g., the ones introduced in 3.1.0")
+    var enableAdvancedFormats = false
+
     @Cfg("a probability of enabling single insertion strategy to insert rows into database.")
     @Probability(activating = true)
     var probOfEnablingSingleInsertionForTable = 0.5
@@ -2938,28 +3076,51 @@ class EMConfig {
     var callbackURLHostname = "localhost"
 
     @Experimental
-    @Cfg("Enable language model connector")
-    var languageModelConnector = false
+    @Cfg("Enable the use of LLMs.")
+    var llm = false
 
     @Experimental
-    @Cfg("Large-language model external service URL. Default is set to Ollama local instance URL.")
-    var languageModelServerURL: String = "http://localhost:11434/"
+    @DependsOnTrueFor("llm")
+    @Cfg("The number of threads to use when making calls towards an LLM, in configured." +
+            " If connecting to Ollama, this value is ignored, and only 1 thread is used.")
+    var llmThreads = 4
 
     @Experimental
-    @Cfg("Large-language model name as listed in Ollama")
-    var languageModelName: String = "llama3.2:latest"
+    @DependsOnTrueFor("llm")
+    @Cfg("LLM external service URL. If not specified, default will be based on the LLM provider.")
+    var llmURL: String? = null
 
     @Experimental
-    @Cfg("Number of threads for language model connector. No more threads than numbers of processors will be used.")
-    @Min(1.0)
-    var languageModelConnectorNumberOfThreads: Int = 2
+    @DependsOnTrueFor("llm")
+    @Cfg("LLM name. If not specified, default will be based on the LLM provider.")
+    var llmName: String? = null
 
+    @Experimental
+    @DependsOnTrueFor("llm")
+    @Cfg("API KEY needed to authenticated toward the chosen LLM provider.")
+    var llmApiKey: String? = null
+
+    @Experimental
+    @Min(0.0) @Max(2.0)
+    @DependsOnTrueFor("llm")
+    @Cfg("Temperature parameter for LLM")
+    var llmTemperature = 0.3
+
+    @Experimental
+    @DependsOnTrueFor("llm")
+    @Min(0.0)
+    @Cfg("How long to wait for LLM's responses")
+    var llmTimeoutSeconds = 60L
+
+    @Experimental
+    @DependsOnTrueFor("llm")
+    @Cfg("Provider for the LLM. This could be a local one (e.g., run through Ollama), or a remote one like OpenAI")
+    var llmProvider = LlmProvider.OLLAMA
 
     @Cfg("If there is no configuration file, create a default template at given configPath location." +
             " However this is done only on the 'default' location. If you change 'configPath', no new file will be" +
             " created.")
     var createConfigPathIfMissing: Boolean = true
-
 
     @Experimental
     @Cfg("Extra checks on HTTP properties in returned responses, used as automated oracles to detect faults.")
@@ -3016,31 +3177,35 @@ class EMConfig {
         return (hours * 60 * 60) + (minutes * 60) + seconds
     }
 
-    @Experimental
+    @Cfg("Enable the collection of response data, to feed new individuals based on field names matching.")
+    var useResponseDataPool = true
+
     @Cfg("How much data elements, per key, can be stored in the Data Pool." +
             " Once limit is reached, new old will replace old data. ")
     @Min(1.0)
     var maxSizeDataPool = 100
 
-    @Experimental
     @Cfg("Threshold of Levenshtein Distance for key-matching in Data Pool")
     @Min(0.0)
     var thresholdDistanceForDataPool = 2
 
-    @Cfg("Enable the collection of response data, to feed new individuals based on field names matching.")
-    var useResponseDataPool = true
-
-    @Experimental
     @Probability(false)
     @Cfg("Specify the probability of using the data pool when sampling test cases." +
             " This is for black-box (bb) mode")
     var bbProbabilityUseDataPool = 0.8
 
-    @Experimental
     @Probability(false)
     @Cfg("Specify the probability of using the data pool when sampling test cases." +
             " This is for white-box (wb) mode")
     var wbProbabilityUseDataPool = 0.2
+
+    @Experimental
+    @Cfg("Specify if should use the pre-existing dictionary of values when sampling random string." +
+            " If so, those will be added to the data pool.")
+    var useDictionaryDataPool = false
+
+    @Cfg("Feed the individual entries of object examples to the data pool.")
+    var useObjectExampleDataPool = true
 
     @Cfg("Specify the naming strategy for test cases.")
     var namingStrategy = defaultTestCaseNamingStrategy
@@ -3125,32 +3290,24 @@ class EMConfig {
             " path element of the URL will not change).")
     var overrideAuthExternalEndpointURL : String? = null
 
-    @Experimental
-    @ExistingPath(true,false)
-    @Cfg("Specify an OAI Overlay file path, or a folder containing those." +
-            " In this latter case, Overlay files will be searched recursively in the nested folder, matching" +
-            " a given list of configurable suffixes." +
-            " Each Overlay will be applied to the target OpenAPI schema." +
-            " If more than one Overlay file is applied, no specific ordering of transformations is enforced.")
-    var overlay = ""
+
+
+
+    @Min(0.0)
+    @Cfg("A 429 'Too Many Requests' response might not provide info on for how long the rate-limiter is in place." +
+            " If no info is provided in the response, or it is not valid, then wait for a certain amount of time" +
+            " before attempting again to make any call")
+    var defaultDelayInSecondsFor429 = 10
+
 
     @Experimental
-    @Cfg("Comma ',' separated list of file name suffixes." +
-            " When scanning a folder for OAI Overlay files, any file with name matching any one of these" +
-            " suffixes will be loaded and applied." +
-            " For example, '.json' could be used to match all JSON files." +
-            " If the folder contains also other types of files with same extension, you might need to define" +
-            " some naming convention, and then use suffixes based on it, e.g., '-overlay.yaml' to match" +
-            " all YAML files whose name ends in 'overlay', like 'example-overlay.yaml'.")
-    var overlayFileSuffixes = ".json,.yaml,.yml"
+    @Cfg("When dealing with string data, infer constraints based on the name or description." +
+            " For example, a string field called 'uuid' likely is going to represent an UUID." +
+            " A string property referring to 'ISO 8601' in its description might be a date." +
+            " And so on." +
+            " This is just an heuristics though, and unrestricted strings would still be sampled with a given probability.")
+    var inferFormatFromNames = false
 
-    @Experimental
-    @Cfg("When applying Overlay transformations, by default EvoMaster will crash immediately" +
-            " if there is any issue with the transformations, e.g., if some transformations are not applied" +
-            " because the JSON Path selectors found no applicable node in the OpenAPI schema." +
-            " This option can be used to override such behavior, and let the fuzzing go on without" +
-            " applying any overlay.")
-    var overlayLenient = false
 
     @Experimental
     @Cfg("arazzo example location")
@@ -3209,6 +3366,7 @@ class EMConfig {
         if (instrumentMR_EXT_0) categories.add(ReplacementCategory.EXT_0.toString())
         if (instrumentMR_NET) categories.add(ReplacementCategory.NET.toString())
         if (instrumentMR_MONGO) categories.add(ReplacementCategory.MONGO.toString())
+        if (instrumentMR_CASSANDRA) categories.add(ReplacementCategory.CASSANDRA.toString())
         if (instrumentMR_OPENSEARCH) categories.add(ReplacementCategory.OPENSEARCH.toString())
         if (instrumentMR_REDIS) categories.add(ReplacementCategory.REDIS.toString())
         if (instrumentMR_DYNAMODB) categories.add(ReplacementCategory.DYNAMODB.toString())
@@ -3259,7 +3417,8 @@ class EMConfig {
 
     fun getExcludeEndpoints() = endpointExclude?.split(",")?.map { it.trim() } ?: listOf()
 
-    fun isEnabledAIModelForResponseClassification() = aiModelForResponseClassification != AIResponseClassifierModel.NONE
+    fun isEnabledAIModelForResponseClassification() = getAIModelForResponseClassification().any { it != AIResponseClassifierModel.NONE }
+
 
     /**
      * Source to build the final GA solution when evolving full test suites (not single tests).
@@ -3360,6 +3519,32 @@ class EMConfig {
 
         disabledOracleCodesList = disabled.distinct()
         return disabledOracleCodesList!!
+    }
+
+    // Sets the AI response classification models programmatically.
+    fun setAIModels(vararg models: AIResponseClassifierModel) {
+        aiModelForResponseClassification = models.toSet()
+    }
+
+    /**
+     * Parses and validates the configured AI response classification models.
+     * The configuration may contain a single model (e.g., "GLM") or
+     * multiple models separated by commas for ensemble usage (e.g., "GLM, NN, KDE")
+     * The value "NONE" to disable AI-based response classification.
+     */
+    fun getAIModelForResponseClassification(): List<AIResponseClassifierModel> {
+        val models = aiModelForResponseClassification
+            .toList()
+            .sorted()
+
+        // EvoMaster accept NONE or a combination of the AI models and not both
+        if (models.contains(AIResponseClassifierModel.NONE) && models.size > 1) {
+            throw ConfigProblemException(
+                "Invalid configuration: NONE cannot be combined with other AI models"
+            )
+        }
+
+        return models
     }
 
 }

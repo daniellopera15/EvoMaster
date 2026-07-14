@@ -2,6 +2,7 @@ package org.evomaster.core.parser
 
 import org.evomaster.core.search.gene.regex.RegexGene
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.assertThrows
 
 /**
  * Created by arcuri82 on 11-Sep-19.
@@ -221,7 +222,181 @@ class GeneRegexJavaVisitorTest : GeneRegexEcma262VisitorTest() {
     }
 
     @Test
+    fun testFlags(){
+        checkSameAsJava("""[(?iu)(?sd:x)]""")
+        checkCanSample("""[(?iu)(?sd:x)]""", listOf("(", ")", "?", "i", "u", "s", "d", ":", "x"), 1000)
+        checkSameAsJava("""(?i:)""")
+        checkSameAsJava("""(?i:a.*[abc]+\w{1,3})""")
+        checkCanSample("""(?i:a)(?i:A)""", listOf("aa", "aA", "Aa", "AA"), 100)
+        checkSameAsJava("""(?i:\u00C2)""")
+        checkSameAsJava("^((?i)@.+)$")
+        checkSameAsJava("""(?iu:[\u03A1\u00C2]*)""")
+        checkCanSample("""(?iu:\u03A1\u00C2)""", listOf("\u03a1\u00c2", "\u03a1\u00e2", "\u03c1\u00c2", "\u03c1\u00e2"), 100)
+        checkSameAsJava("^((?iu)@.+)$")
+        checkSameAsJava("^(?iu)")
+        checkSameAsJava("(?iu)")
+    }
+
+    @Test
+    fun testBackreferences(){
+        checkSameAsJava("""(aaa)(?:bbb)\1""")
+        checkSameAsJava("""(a|b|c)\1\1""")
+        checkSameAsJava("""(?<randomName>a|b|c)\1\k<randomName>""")
+        checkSameAsJava("""<>[(?<notAName>abc)]""")
+        checkCanSample("""[(?<notAName>abc)]""", "N", 100)
+        checkSameAsJava("""((A)(B(C)))\1\2\3\4""")
+        checkSameAsJava("""(a)(b)(c)(d)(e)(f)(g)(h)(i)(j)(k)\10\11\12\120\120{3}""")
+    }
+
+    @Test
     override fun testJSExclusiveEscapes() {
         // JS exclusive
+    }
+
+    @Test
+    fun testCharClassIntersectionSubtractionAndNesting(){
+        checkSameAsJava("[abc-e[f-h]ij-l[m]n]")
+        checkSameAsJava("[a&&a][a&&a&&a]")
+        checkSameAsJava("[a-z&&[aeiou]]")
+        checkSameAsJava("[a-z&&[^aeiou]]")
+        checkSameAsJava("[a-z&&[a-p]&&[f-z]]")
+        checkSameAsJava("[ac-e&&[a-d]]")
+        checkSameAsJava("[\\w&&[a-z]]")
+        checkSameAsJava("[a-z&&[b-y]]")
+        checkSameAsJava("[a-z0-9&&[A-Z0-9]&&[2B4C]]")
+        checkSameAsJava("[[a-c][x-z]&&[b-y]]")
+        checkSameAsJava("[a-c&&[b-d]e-g]")
+        checkSameAsJava("[^a-z&&[^aeiou]]")
+        checkSameAsJava("[\\s&&[^\\n]]")
+        checkSameAsJava("[a-c&&[c-e]]")
+        checkSameAsJava("[a-z&&[a-z]]")
+        checkSameAsJava("[a-ce-g&&[b-f]]")
+        checkSameAsJava("[[a-z&&[a-p]]&&[f-z]]")
+        checkSameAsJava("[a[b[c[d&&[\\w]]]][0-7&&\\d&&[0-5]&&1-5]]")
+        checkSameAsJava("&&")
+        checkSameAsJava("[[a-c&&[d-f]][x-z]]")
+        checkSameAsJava("[a-c&&[b-d]]|[x&&y]")
+    }
+
+    @Test
+    fun testEmptyAlternatives() {
+        assertThrows<IllegalStateException>{ checkSameAsJava("[a&&b]") }
+        checkSameAsJava("[a&&b]|c")
+        checkSameAsJava("0|[a&&b]|c")
+        assertThrows<IllegalStateException> { checkSameAsJava("[a&&b]|[c&&d]") }
+        assertThrows<IllegalStateException> { checkSameAsJava("[a&&b]|[c&&d]|[e&&f]") }
+        checkSameAsJava("a|[b&&c]|d")
+        checkSameAsJava("([a&&b]|c)d")
+    }
+
+    @Test
+    fun testInvalidBackRefs() {
+        assertThrows<IllegalStateException> { checkSameAsJava("\\1") }
+        checkSameAsJava("\\1|c")
+        assertThrows<IllegalStateException> { checkSameAsJava("(a)\\2") }
+        checkSameAsJava("(a)\\2|b")
+        assertThrows<IllegalStateException> { checkSameAsJava("(\\1)") }
+        checkSameAsJava("(\\1|a)")
+        assertThrows<IllegalStateException> { checkSameAsJava("\\1(a)") }
+        checkSameAsJava("\\1(a)|b")
+        checkSameAsJava("(a)(\\1|\\2|c)")
+        assertThrows<IllegalStateException> { checkSameAsJava("\\1|\\2|\\3") }
+        checkSameAsJava("(\\2|a)|b")
+        checkSameAsJava("\\1|[a&&b]|c")
+        assertThrows<IllegalStateException> { checkSameAsJava("\\1|[a&&b]") }
+        checkSameAsJava("([a&b])|b\\1")
+        assertThrows<IllegalStateException> { checkSameAsJava("([a&&b])|b\\1") }
+        assertThrows<IllegalStateException> { checkSameAsJava("\\k<name>") }
+        assertThrows<IllegalStateException> { checkSameAsJava("((\\1|\\2)+)") }
+        checkSameAsJava("((\\1|\\2)*)")
+        checkSameAsJava("(\\12)*")
+        assertThrows<IllegalStateException> { checkSameAsJava("\\12*") }
+    }
+
+    @Test
+    fun testEmptyWithFlagGroup() {
+        checkSameAsJava("(?i:)")
+        checkSameAsJava("(?i:)|c")
+        assertThrows<IllegalStateException> { checkSameAsJava("(?i:[a&&b])") }
+        checkSameAsJava("(?i:[a&&b])|c")
+        checkSameAsJava("(?i:[a&&b]|c)")
+        assertThrows<IllegalStateException> { checkSameAsJava("(?i:(?u:[a&&b]))") }
+        checkSameAsJava("(?i:(?u:[a&&b])|c)")
+    }
+
+    @Test
+    fun testEmptyWithFlagScope() {
+        checkSameAsJava("(?iu)")
+        checkSameAsJava("^(?iu)")
+        assertThrows<IllegalStateException> { checkSameAsJava("(?iu)[a&&b]") }
+        checkSameAsJava("(?iu)[a&&b]|c")
+        assertThrows<IllegalStateException> { checkSameAsJava("^(?iu)[a&&b]$") }
+        checkSameAsJava("^(?iu)[a&&b]$|c")
+        checkSameAsJava("^(?iu)([a&&b]$|c)")
+    }
+
+    @Test
+    fun testEmptyWithAnchors() {
+        checkSameAsJava("^$")
+        assertThrows<IllegalStateException> { checkSameAsJava("^[a&&b]$") }
+        checkSameAsJava("^[a&&b]$|c")
+        checkSameAsJava("^(?i:abc)$")
+        assertThrows<IllegalStateException> { checkSameAsJava("^([a&&b])$") }
+        checkSameAsJava("^([a&&b]|c)$")
+    }
+
+    @Test
+    fun testEmptyWithQuantifiers() {
+        checkSameAsJava("[a&&b]*")
+        checkSameAsJava("[a&&b]*c")
+        checkSameAsJava("[a&&b]?")
+        checkSameAsJava("[a&&b]?c")
+        checkSameAsJava("[a&&b]{0,}")
+        checkSameAsJava("[a&&b]{0}")
+        checkSameAsJava("([a&&b])*")
+        checkSameAsJava("([a&&b])*c")
+        assertThrows<IllegalStateException> { checkSameAsJava("[a&&b]+") }
+        checkSameAsJava("[a&&b]+|c")
+        assertThrows<IllegalStateException> { checkSameAsJava("[a&&b]{1,}") }
+        checkSameAsJava("[a&&b]{1,}|c")
+        assertThrows<IllegalStateException> { checkSameAsJava("[a&&b]{1}") }
+        checkSameAsJava("[a&&b]{1}|c")
+        assertThrows<IllegalStateException> { checkSameAsJava("[a&&b]{2,4}") }
+        checkSameAsJava("[a&&b]{2,4}|c")
+        assertThrows<IllegalStateException> { checkSameAsJava("([a&&b])+") }
+        checkSameAsJava("([a&&b])+|c")
+        checkSameAsJava("[a&&b]{3}|c")
+        checkSameAsJava("[a&&b]{3,3}|c")
+        checkSameAsJava("[a&&b]{0,0}|c")
+    }
+
+    @Test
+    fun testEmptyWithBackRefsAndQuantifiers() {
+        checkSameAsJava("(a)\\1*")
+        checkSameAsJava("\\1*c")
+        checkSameAsJava("\\1?c")
+        checkSameAsJava("(\\1*)")
+        assertThrows<IllegalStateException> { checkSameAsJava("\\1+") }
+        checkSameAsJava("\\1+|c")
+        assertThrows<IllegalStateException> { checkSameAsJava("(\\1+)") }
+        checkSameAsJava("(\\1+)|c")
+    }
+
+    @Test
+    fun testEmptyNestedGroups() {
+        checkSameAsJava("(?:)")
+        checkSameAsJava("(?:)|c")
+        assertThrows<IllegalStateException> { checkSameAsJava("(?:[a&&b])") }
+        checkSameAsJava("(?:[a&&b])|c")
+        checkSameAsJava("([a&&b])|c")
+        checkSameAsJava("([a&&b]|[c&&d])|e")
+        checkSameAsJava("(([a&&b])|([c&&d]))|e")
+        checkSameAsJava("((([a&&b]|[c&&d])|[e&&f])|g)")
+        checkSameAsJava("(g|(([a&&b]|[c&&d])|[e&&f]))")
+        assertThrows<IllegalStateException> { checkSameAsJava("(?<name>[a&&b])") }
+        checkSameAsJava("(?<name>[a&&b])|c")
+        assertThrows<IllegalStateException> { checkSameAsJava("(?<name>[a&&b])|c\\k<name>") }
+        assertThrows<IllegalStateException> { checkSameAsJava("a([b&&c])d") }
+        assertThrows<IllegalStateException> { checkSameAsJava("abc|\\k<name>") }
     }
 }

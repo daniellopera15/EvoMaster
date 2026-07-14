@@ -5,7 +5,7 @@
     <parent>
         <groupId>org.evomaster</groupId>
         <artifactId>evomaster-core-tests</artifactId>
-        <version>5.2.1-SNAPSHOT</version>
+        <version>6.1.2-SNAPSHOT</version>
     </parent>
 
     <artifactId>evomaster-e2e-tests</artifactId>
@@ -17,6 +17,7 @@
         <module>dropwizard-examples</module>
         <module>micronaut-latest</module>
         <module>spring</module>
+        <module>python-rest-bb</module>
     </modules>
 
 
@@ -56,20 +57,5 @@
         </pluginManagement>
     </build>
 
-    <profiles>
-        <profile>
-            <id>Configs for JDK >= 17</id>
-            <activation>
-                <jdk>[17,)</jdk>
-            </activation>
-           <!--
-           This module should be enabled after Spring2 dependencies
-           are pulled down to each e2e project
-           -->
-<!--            <modules>-->
-<!--                <module>spring-rest-jakarta</module>-->
-<!--            </modules>-->
-        </profile>
-    </profiles>
 
 </project>
