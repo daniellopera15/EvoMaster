@@ -2208,6 +2208,10 @@ class EMConfig {
 
     fun isEnabledArazzoStrategy() = isUsingAdvancedTechniques() && arazzoStrategy != ArazzoStrategy.NONE
 
+    @Experimental
+    @Cfg("Optional workflow weights as workflowId:weight pairs, comma-separated.")
+    var arazzoWorkflowWeights = ""
+
     @Cfg("Specify whether to enable resource dependency heuristics, i.e, probOfEnablingResourceDependencyHeuristics > 0.0. " +
             "Note that the option is available to be enabled only if resource-based smart sampling is enable. " +
             "This option has an effect on sampling multiple resources and mutating a structure of an individual.")
