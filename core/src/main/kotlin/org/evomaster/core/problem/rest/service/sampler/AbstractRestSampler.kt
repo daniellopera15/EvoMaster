@@ -1,6 +1,9 @@
 package org.evomaster.core.problem.rest.service.sampler
 
 import com.google.inject.Inject
+import com.webfuzzing.arazzo.access.ArazzoAccess
+import com.webfuzzing.arazzo.models.domain.Workflow
+import com.webfuzzing.arazzo.parser.ArazzoParser
 import org.evomaster.client.java.controller.api.dto.SutInfoDto
 import org.evomaster.client.java.controller.api.dto.problem.ExternalServiceDto
 import org.evomaster.client.java.instrumentation.shared.TaintInputName
@@ -90,6 +93,11 @@ abstract class AbstractRestSampler : HttpWsSampler<RestIndividual>() {
     lateinit var skippedEndpoints : List<Endpoint>
         private set
 
+    var workflowsArazzo = mutableListOf<Workflow>()
+        private set
+
+    lateinit var workflowsArazzoById: Map<String, Workflow>
+        private set
 
     @PostConstruct
     open fun initialize() {
@@ -152,6 +160,13 @@ abstract class AbstractRestSampler : HttpWsSampler<RestIndividual>() {
         }
 
         updateDataPoolBasedOnSchema(actionCluster)
+
+        if (config.arazzoStrategy != EMConfig.ArazzoStrategy.NONE) {
+            val arazzo = readWorkflowsArazzo()
+            workflowsArazzo.clear()
+            workflowsArazzo.addAll(arazzo)
+            workflowsArazzoById = arazzo.associateBy { it.workflowId }
+        }
 
         initSqlInfo(infoDto)
 
@@ -489,6 +504,14 @@ abstract class AbstractRestSampler : HttpWsSampler<RestIndividual>() {
             .forEach {
                 dataPool.addValue(it.name, it.getValueAsRawString())
             }
+    }
+
+    /**
+     * Parse Arazzo and looking for Workflows
+     */
+    private fun readWorkflowsArazzo(): List<Workflow> {
+        val arazzoText = ArazzoAccess.readFromDisk(config.arazzoLocation)
+        return ArazzoParser.parse(arazzoText, schemaHolder.main.schemaParsed).workflows
     }
 
 }

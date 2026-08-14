@@ -1761,6 +1761,31 @@ class EMConfig {
             "whether to send a request as-is or attempt a repair.")
     var aIResponseClassifierWeaknessThreshold = 0.8
 
+    enum class AIEnsembleBestModelSelectionStrategy {
+
+        /** Selects the model with the highest average across the considered performance metrics. */
+        MAX_OF_AVERAGE,
+
+        /**
+         * Selects the model with the highest harmonic mean across the considered performance metrics.
+         * The harmonic mean penalizes weaker metrics,
+         * favoring models with balanced performance across all considered metrics.
+         *
+         * For example, consider the metrics of models A as [0.95, 0.9, 0.9, 0.3] and B as [0.6, 0.7, 0.65, 0.75].
+         * Their harmonic means are 0.60 and 0.66, so B is selected even though A is very strong in some metrics.
+         */
+        MAX_OF_HARMONIC_MEAN,
+
+        /** Strictly selects the model with the highest minimum value across the considered performance metrics. */
+        MAX_OF_MIN,
+
+    }
+
+    @Experimental
+    @Cfg("Strategy used to select the best-performing model when a combination of AI models " +
+            "are used as an ensemble model for response classification.")
+    var aIEnsembleBestModelSelectionStrategy = AIEnsembleBestModelSelectionStrategy.MAX_OF_AVERAGE
+
     @Cfg("Output a JSON file representing statistics of the fuzzing session, written in the WFC Report format." +
             " This also includes a index.html web application to visualize such data.")
     @DependsOnTrueFor("createTests")
@@ -2225,6 +2250,19 @@ class EMConfig {
     @Cfg("Specify whether to enable resource-based strategy to sample an individual during search. " +
             "Note that resource-based sampling is only applicable for REST problem with MIO algorithm.")
     var resourceSampleStrategy = ResourceSamplingStrategy.ConArchive
+
+
+    enum class ArazzoStrategy {
+        NONE,
+        ENABLED
+    }
+
+    @Experimental
+    @Cfg("Enable workflow-based sampling from an Arazzo document. " +
+            "Only applicable for REST with MIO.")
+    var arazzoStrategy = ArazzoStrategy.NONE
+
+    fun isEnabledArazzoStrategy() = isUsingAdvancedTechniques() && arazzoStrategy != ArazzoStrategy.NONE
 
     @Cfg("Specify whether to enable resource dependency heuristics, i.e, probOfEnablingResourceDependencyHeuristics > 0.0. " +
             "Note that the option is available to be enabled only if resource-based smart sampling is enable. " +
@@ -3326,6 +3364,10 @@ class EMConfig {
             " This is just an heuristics though, and unrestricted strings would still be sampled with a given probability.")
     var inferFormatFromNames = false
 
+
+    @Experimental
+    @Cfg("arazzo location in disk")
+    var arazzoLocation = ""
 
     fun getProbabilityUseDataPool() : Double{
         return if(blackBox){
